@@ -1,82 +1,98 @@
-import functools
 import numpy as np
-import scipy.optimize
+import numpy.linalg as la
+import matplotlib
 import matplotlib.pyplot as plt
-import matplotlib.patches
-np.random.seed(21)
 
-EPS = 1e-9
+class LevenbergMarquardt:
 
+    def __init__(self, n, f, jacobian, criterion=1.0, max_iters=100):
+        self.criterion = criterion
+        self.max_iters = max_iters
+        self.eye = np.eye(n)
+        self.jacobian = jacobian
+        self.func = f
+        self.up = 2.0
+        self.down = 0.8
+        self.lbd = 1.0
 
-def get_residuals(x, msmt, beacons):
-    diff = ((x - beacons) ** 2).sum(-1)
-    residuals = diff - msmt
-    return residuals
+    def _get_iterate(self, x, fval):
+        """Assume linear dynamics locally."""
+        J = self.jacobian(x)
+        mat = J.T @ J + self.lbd * self.eye
+        x_iter = x - la.inv(mat) @ J.T @ fval
+        return x_iter
 
+    def _compare(self, f0, f1, x, x_iter):
+        """Accept iterate if better,
+        else shrink trust region."""
+        if f0 < f1:
+            self.lbd *= self.up
+            return x
+        else:
+            self.lbd *= self.down
+            return x_iter
 
-class Experiment:
-    
-    def __init__(self):
-        self.init_locations()
-        self.init_params()
+    def solve(self, x):
+        """Solve non-linear least squares via LM."""
+        history = []
+        for _ in range(self.max_iters):
+            history += [x]
+            fval = self.func(x)
+            x_iter = self._get_iterate(x, fval)
+            fval_iter = self.func(x_iter)
+            f0, f1 = map(la.norm, (fval, fval_iter))
+            x = self._compare(f0, f1, x, x_iter)
+            if f1 < self.criterion:
+                history = np.array(history)
+                return x, history
+        msg = f'Stopping crit {self.criterion} not \
+            reached in {self.max_iters} iters.'
+        raise ValueError(msg)
 
-    def init_locations(self):
-        self.position = np.array([110, 70])
-        self.beacons = np.array([
-            [100, 140],
-            [90, 30],
-            [70, 120],
-        ])
-        self.dist_to_beacons = np.linalg.norm(
-            self.beacons - self.position, axis=1,
-        )
-       
-    def init_params(self):
-        sigma_sensor = 2
-        self.noise = functools.partial(
-            np.random.normal, 
-            loc=0,
-            scale=sigma_sensor,
-        )
-   
-    def make_circles(self):
-        kwargs = dict(fill=False, color='seagreen', alpha=0.6, linestyle='dashed')
-        mapfunc = lambda tup: matplotlib.patches.Circle(*tup, **kwargs)
-        circles = map(mapfunc, zip(self.beacons, self.dist_to_beacons))     
-        return circles
-    
-    def plot_experiment(self, pred_location):
-        fig, ax = plt.subplots(figsize=(12, 12))
-        ax.set(xlim=[0, 200], ylim=[0, 200], aspect='equal', title='Localization')
-        ax.scatter(*pred_location, c='purple', s=50, alpha=0.5, marker='x')
-        ax.scatter(*self.position, c='red', s=50, alpha=0.5, marker='o')
-        ax.scatter(*self.beacons.T, c='darkblue', s=50, marker='s')
-        circles = self.make_circles()
-        for circle in circles:
-            ax.add_patch(circle)
-        fig.tight_layout()
-        fig.savefig('../images/beacon.png', dpi=100, bbox_inches='tight')
+def make_circles(beacons, radii):
+    kwargs = dict(fill=False, color='seagreen', alpha=0.4, linestyle='dashed')
+    mapfunc = lambda tup: matplotlib.patches.Circle(*tup, **kwargs)
+    circles = map(mapfunc, zip(beacons, radii))
+    return circles
 
-    def get_msmt(self):
-        msmt = self.dist_to_beacons + self.noise()
-        return msmt
-    
-    def run(self):
-        msmt = self.get_msmt()
-        residual_func = functools.partial(
-            get_residuals,
-            msmt=msmt,
-            beacons=self.beacons,
-        )
-        x0 = np.array([50, 150])
-        result = scipy.optimize.least_squares(residual_func, x0)
-        self.plot_experiment(result.x)
+def add_circles(beacons, radii, ax):
+    circles = make_circles(beacons, radii)
+    list(map(ax.add_patch, circles))
 
+def set_plot_properties(fig, ax):
+    fig.tight_layout()
+    ax.set(xlim=[0, 200], ylim=[0, 200],
+        aspect='equal', title='Range Localization')
+    ax.legend()
+
+def plot_experiment(history, position, beacons, radii):
+    fig, ax = plt.subplots(figsize=(5, 5))
+    add_circles(beacons, radii, ax)
+    ax.scatter(*position, c='darkblue', s=50, marker='x', label='x_true')
+    ax.scatter(*beacons.T, c='darkblue', s=50, marker='s', label='beacons')
+    ax.scatter(*history[0], c='orange', s=20, marker='o')
+    ax.plot(*history.T, c='orange', label='iterates')
+    set_plot_properties(fig, ax)
+    fig.savefig('../images/beacon.png', dpi=100, bbox_inches='tight')
+    plt.show()
+
+def make_lm(position, beacons, dist, sigma=1e-1):
+    m, n = beacons.shape
+    noise = np.random.normal(0, sigma, size=(m,))
+    msmts = dist + noise
+    jacobian = lambda x: 2 * (x - beacons)
+    func = lambda x: la.norm(x - beacons, axis=-1) - msmts
+    lm = LevenbergMarquardt(n, func, jacobian, criterion=1, max_iters=1000)
+    return lm
 
 def main():
-    experiment = Experiment()
-    experiment.run()
-
+    position = np.array([110, 70])
+    beacons = np.array([[130, 130], [90, 40], [70, 120]])
+    dist = la.norm(position[None, :] - beacons, axis=-1)
+    lm = make_lm(position, beacons, dist)
+    x0 = np.array([130, 160])
+    x, history = lm.solve(x0)
+    plot_experiment(history, position, beacons, dist)
 
 if __name__ == '__main__':
     main()
