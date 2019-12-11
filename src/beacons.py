@@ -72,11 +72,11 @@ class LevenbergMarquardt:
         return exitcode, x, history
 
 
-def make_lm(beacons, dist, sigma=1e-1, jitted=False):
+def make_lm(beacons, distance, sigma=1e-1):
     kwargs = dict(criterion=1.0, max_iters=1000)
     m, n = beacons.shape
     noise = np.random.normal(0, sigma, size=(m,))
-    msmts = dist + noise
+    msmts = distance + noise
     lm = LevenbergMarquardt(n, msmts, beacons, **kwargs)
     return lm
 
@@ -84,8 +84,8 @@ def make_lm(beacons, dist, sigma=1e-1, jitted=False):
 def make_problem():
     position = np.array([110, 70], np.float32)
     beacons = np.array([[130, 130], [90, 40], [70, 120]], np.float32)
-    dist = la.norm(position[None, :] - beacons, axis=-1)
-    return position, beacons, dist
+    distance = la.norm(position[None, :] - beacons, axis=-1)
+    return position, beacons, distance
 
 
 def maybe_raise(exitcode):
@@ -93,22 +93,13 @@ def maybe_raise(exitcode):
         raise ValueError('Stopping criterion not reached.')
 
 
-def parse_args():
-    try:
-        jitted = 'jit' in sys.argv[1].lower()
-    except IndexError:
-        jitted = False
-    return jitted
-
-
 def main():
-    jitted = parse_args()
-    position, beacons, dist = make_problem()
-    lm = make_lm(beacons, dist, jitted=jitted)
+    position, beacons, distance = make_problem()
+    lm = make_lm(beacons, distance)
     x0 = np.array([130, 160], np.float32)
     exitcode, x, history = lm.solve(x0)
     maybe_raise(exitcode)
-    plot_experiment(history, position, beacons, dist)
+    plot_experiment(history, position, beacons, distance)
 
 
 if __name__ == '__main__':
