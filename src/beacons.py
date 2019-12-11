@@ -1,27 +1,46 @@
 import numba
 import numpy as np
 import numpy.linalg as la
-import matplotlib
-import matplotlib.pyplot as plt
 import sys
 
+from plotting import plot_experiment
+
+
+spec = [
+    ('criterion', numba.float32),
+    ('max_iters', numba.int32),
+    ('msmts', numba.float32[:]),
+    ('beacons', numba.float32[:, :]),
+    ('eye', numba.float32[:, :]),
+    ('up', numba.float32),
+    ('down', numba.float32),
+    ('lbd', numba.float32),
+]
+
+
+@numba.jitclass(spec)
 class LevenbergMarquardt:
 
-    def __init__(self, n, f, jacobian, criterion=1.0, max_iters=100):
+    def __init__(self, n, msmts, beacons, criterion, max_iters):
         self.criterion = criterion
         self.max_iters = max_iters
-        self.eye = np.eye(n)
-        self.jacobian = jacobian
-        self.func = f
-        self.up = 2.0
-        self.down = 0.8
-        self.lbd = 1.0
+        self.msmts = msmts.astype(np.float32)
+        self.beacons = beacons.astype(np.float32)
+        self.eye = np.eye(n).astype(np.float32)
+        self.up, self.down, self.lbd = 2.0, 0.8, 1.0
+
+    def jacobian(self, x):
+        return 2 * (x - self.beacons)
+
+    def func(self, x):
+        norm = np.sqrt(((x - self.beacons) ** 2).sum(-1))
+        return norm - self.msmts
 
     def _get_iterate(self, x, fval):
         """Assume linear dynamics locally."""
         J = self.jacobian(x)
         mat = J.T @ J + self.lbd * self.eye
-        x_iter = x - la.inv(mat) @ J.T @ fval
+        x_iter = x - np.ascontiguousarray(la.inv(mat)) @ J.T @ fval
         return x_iter
 
     def _compare(self, f0, f1, x, x_iter):
@@ -52,76 +71,15 @@ class LevenbergMarquardt:
         history = np.float32(history)
         return exitcode, x, history
 
-spec = [
-    ('criterion', numba.float32),
-    ('max_iters', numba.int32),
-    ('msmts', numba.float32[:]),
-    ('beacons', numba.float32[:, :]),
-    ('eye', numba.float32[:, :]),
-    ('up', numba.float32),
-    ('down', numba.float32),
-    ('lbd', numba.float32),
-]
-
-@numba.jitclass(spec)
-class LevenbergMarquardtJit(LevenbergMarquardt):
-
-    def __init__(self, n, msmts, beacons, criterion, max_iters):
-        self.criterion = criterion
-        self.max_iters = max_iters
-        self.msmts = msmts.astype(np.float32)
-        self.beacons = beacons.astype(np.float32)
-        self.eye = np.eye(n).astype(np.float32)
-        self.up = 2.0
-        self.down = 0.8
-        self.lbd = 1.0
-
-    def jacobian(self, x):
-        return 2 * (x - self.beacons)
-
-    def func(self, x):
-        norm = np.sqrt(((x - self.beacons) ** 2).sum(-1))
-        return norm - self.msmts
-
-def make_circles(beacons, radii):
-    kwargs = dict(fill=False, color='seagreen', alpha=0.4, linestyle='dashed')
-    mapfunc = lambda tup: matplotlib.patches.Circle(*tup, **kwargs)
-    circles = map(mapfunc, zip(beacons, radii))
-    return circles
-
-def add_circles(beacons, radii, ax):
-    circles = make_circles(beacons, radii)
-    list(map(ax.add_patch, circles))
-
-def set_plot_properties(fig, ax):
-    fig.tight_layout()
-    ax.set(xlim=[0, 200], ylim=[0, 200],
-        aspect='equal', title='Range Localization')
-    ax.legend()
-
-def plot_experiment(history, position, beacons, radii):
-    fig, ax = plt.subplots(figsize=(5, 5))
-    add_circles(beacons, radii, ax)
-    ax.scatter(*position, c='darkblue', s=50, marker='x', label='x_true')
-    ax.scatter(*beacons.T, c='darkblue', s=50, marker='s', label='beacons')
-    ax.scatter(*history[0], c='orange', s=20, marker='o')
-    ax.plot(*history.T, c='orange', label='iterates')
-    set_plot_properties(fig, ax)
-    fig.savefig('../images/beacon.png', dpi=100, bbox_inches='tight')
-    plt.show()
 
 def make_lm(beacons, dist, sigma=1e-1, jitted=False):
     kwargs = dict(criterion=1.0, max_iters=1000)
     m, n = beacons.shape
     noise = np.random.normal(0, sigma, size=(m,))
     msmts = dist + noise
-    if jitted:
-        lm = LevenbergMarquardtJit(n, msmts, beacons, **kwargs)
-    else:
-        jacobian = lambda x: 2 * (x - beacons)
-        func = lambda x: la.norm(x - beacons, axis=-1) - msmts
-        lm = LevenbergMarquardt(n, func, jacobian, **kwargs)
+    lm = LevenbergMarquardt(n, msmts, beacons, **kwargs)
     return lm
+
 
 def make_problem():
     position = np.array([110, 70], np.float32)
@@ -129,9 +87,11 @@ def make_problem():
     dist = la.norm(position[None, :] - beacons, axis=-1)
     return position, beacons, dist
 
+
 def maybe_raise(exitcode):
     if exitcode != 0:
         raise ValueError('Stopping criterion not reached.')
+
 
 def parse_args():
     try:
@@ -139,6 +99,7 @@ def parse_args():
     except IndexError:
         jitted = False
     return jitted
+
 
 def main():
     jitted = parse_args()
@@ -148,6 +109,7 @@ def main():
     exitcode, x, history = lm.solve(x0)
     maybe_raise(exitcode)
     plot_experiment(history, position, beacons, dist)
+
 
 if __name__ == '__main__':
     main()
